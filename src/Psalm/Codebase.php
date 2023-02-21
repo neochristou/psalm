@@ -35,6 +35,7 @@ use Psalm\Internal\Codebase\Properties;
 use Psalm\Internal\Codebase\Reflection;
 use Psalm\Internal\Codebase\Scanner;
 use Psalm\Internal\Codebase\TaintFlowGraph;
+use Psalm\Internal\Codebase\UnserAssignmentGraph;
 use Psalm\Internal\DataFlow\TaintSink;
 use Psalm\Internal\DataFlow\TaintSource;
 use Psalm\Internal\MethodIdentifier;
@@ -341,6 +342,8 @@ final class Codebase
             $providers->file_reference_provider,
             $progress,
         );
+
+        $this->unser_assignment_graph = new UnserAssignmentGraph();
 
         $this->loadAnalyzer();
 

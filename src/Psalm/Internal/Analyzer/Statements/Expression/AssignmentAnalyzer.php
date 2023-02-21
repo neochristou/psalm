@@ -30,6 +30,7 @@ use Psalm\Internal\Clause;
 use Psalm\Internal\Codebase\DataFlowGraph;
 use Psalm\Internal\Codebase\TaintFlowGraph;
 use Psalm\Internal\Codebase\VariableUseGraph;
+use Psalm\Internal\Codebase\UnserAssignmentGraph;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\ReferenceConstraint;
@@ -117,6 +118,7 @@ class AssignmentAnalyzer
             $statements_analyzer->getFQCLN(),
             $statements_analyzer,
         );
+        /* var_dump($var_id); */
 
         // gets a variable id that *may* contain array keys
         $extended_var_id = ExpressionIdentifier::getExtendedVarId(
@@ -134,6 +136,7 @@ class AssignmentAnalyzer
         $context->inside_assignment = true;
 
         $codebase = $statements_analyzer->getCodebase();
+        $unser_assignment_graph = $codebase->unser_assignment_graph;
 
         $base_assign_value = $assign_value;
 
@@ -210,7 +213,10 @@ class AssignmentAnalyzer
             $context->possibly_assigned_var_ids[$extended_var_id] = true;
         }
 
+        /* var_dump($assign_value); */
+
         if ($assign_value) {
+
             if ($var_id && $assign_value instanceof PhpParser\Node\Expr\Closure) {
                 foreach ($assign_value->uses as $closure_use) {
                     if ($closure_use->byRef
@@ -308,8 +314,17 @@ class AssignmentAnalyzer
             }
         }
 
-        if ($statements_analyzer->data_flow_graph instanceof VariableUseGraph
-            && !$assign_value_type->parent_nodes
+
+        $is_unserialize = false;
+        if ($assign_value && $var_id && $assign_value instanceof PhpParser\Node\Expr\FuncCall &&
+            property_exists($assign_value, 'name') && $assign_value->name == 'unserialize') {
+                $is_unserialize = true;
+                /* var_dump($assign_var); */
+                /* var_dump($assign_value_type); */
+        }
+
+        if (($statements_analyzer->data_flow_graph instanceof VariableUseGraph
+            && !$assign_value_type->parent_nodes) || $is_unserialize
         ) {
             if ($extended_var_id) {
                 $assignment_node = DataFlowNode::getForAssignment(
@@ -408,6 +423,16 @@ class AssignmentAnalyzer
                         $origin_locations = [
                             ...$origin_locations,
                             ...$statements_analyzer->data_flow_graph->getOriginLocations($parent_node),
+                        ];
+                    }
+                }
+
+                // XXX might not be needed
+                if ($is_unserialize) {
+                    foreach ($assign_value_type->parent_nodes as $parent_node) {
+                        $origin_locations = [
+                            ...$origin_locations,
+                            ...$unser_assignment_graph->getOriginLocations($parent_node),
                         ];
                     }
                 }
@@ -544,11 +569,14 @@ class AssignmentAnalyzer
                 return $context->vars_in_scope[$var_id];
             }
 
-            if ($statements_analyzer->data_flow_graph) {
-                $data_flow_graph = $statements_analyzer->data_flow_graph;
+            if ($statements_analyzer->data_flow_graph || $is_unserialize) {
+
+                if ($statements_analyzer->data_flow_graph) {
+                    $data_flow_graph = $statements_analyzer->data_flow_graph;
+                }
 
                 if ($context->vars_in_scope[$var_id]->parent_nodes) {
-                    if ($data_flow_graph instanceof TaintFlowGraph
+                    if ($data_flow_graph && $data_flow_graph instanceof TaintFlowGraph
                         && in_array('TaintedInput', $statements_analyzer->getSuppressedIssues())
                     ) {
                         $context->vars_in_scope[$var_id] = $context->vars_in_scope[$var_id]->setParentNodes([]);
@@ -581,12 +609,24 @@ class AssignmentAnalyzer
 
                         $data_flow_graph->addNode($new_parent_node);
 
+                        if ($is_unserialize) {
+                            $unser_assignment_graph->addNode($new_parent_node);
+                        }
+
                         foreach ($context->vars_in_scope[$var_id]->parent_nodes as $old_parent_node) {
+                            /* echo "Adding path from " . $old_parent_node . " to " . $new_parent_node . "\n"; */
                             $data_flow_graph->addPath(
                                 $old_parent_node,
                                 $new_parent_node,
                                 '=',
                             );
+                            if ($is_unserialize) {
+                                $unser_assignment_graph->addPath(
+                                    $old_parent_node,
+                                    $new_parent_node,
+                                    '=',
+                                );
+                            }
                         }
 
                         $assign_value_type = $assign_value_type->setParentNodes(
